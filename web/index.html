@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>🪙 Solana 抛硬币 · Coin Flip (Devnet)</title>
+<style>
+  :root {
+    --bg: #0f1020;
+    --card: #1a1c34;
+    --accent: #9945ff;
+    --accent2: #14f195;
+    --text: #e8e8f0;
+    --muted: #9a9ab0;
+    --win: #14f195;
+    --lose: #ff5d73;
+    --border: #2a2c4a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: radial-gradient(1200px 800px at 70% -10%, #241a4d 0%, var(--bg) 55%);
+    color: var(--text); display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .card {
+    width: 100%; max-width: 460px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 20px; padding: 28px; box-shadow: 0 24px 60px rgba(0,0,0,.45);
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .badge { display:inline-block; font-size:11px; padding:2px 8px; border-radius:999px; background:#2a2c4a; color:var(--muted); margin-left:6px; vertical-align:middle;}
+  button {
+    cursor: pointer; border: none; border-radius: 12px; font-size: 15px; font-weight: 600;
+    padding: 13px 16px; width: 100%; transition: transform .08s ease, opacity .2s;
+  }
+  button:active { transform: scale(.98); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .btn-primary { background: linear-gradient(135deg, var(--accent), #6d28d9); color: #fff; }
+  .btn-flip { background: linear-gradient(135deg, var(--accent2), #0bbf73); color: #06231a; margin-top: 14px; }
+  .row { display: flex; gap: 10px; align-items: center; }
+  .stat { background: #12132a; border:1px solid var(--border); border-radius: 12px; padding: 12px 14px; flex:1; }
+  .stat .k { font-size: 11px; color: var(--muted); }
+  .stat .v { font-size: 16px; font-weight: 700; margin-top: 2px; word-break: break-all; }
+  .grid { display:flex; gap:10px; margin: 16px 0; }
+  label { font-size: 13px; color: var(--muted); display:block; margin: 16px 0 6px; }
+  input {
+    width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--border);
+    background: #12132a; color: var(--text); font-size: 15px;
+  }
+  .coin {
+    width: 96px; height: 96px; border-radius: 50%; margin: 8px auto 4px;
+    background: radial-gradient(circle at 35% 30%, #ffe9a8, #e0a106 60%, #9a6e00);
+    display:flex; align-items:center; justify-content:center; font-size: 44px;
+    box-shadow: inset 0 -6px 12px rgba(0,0,0,.3), 0 8px 20px rgba(0,0,0,.4);
+    transition: transform .1s;
+  }
+  .coin.flipping { animation: spin 0.6s linear infinite; }
+  @keyframes spin { 0%{transform:rotateY(0)} 100%{transform:rotateY(360deg)} }
+  .result { text-align:center; font-size: 20px; font-weight: 800; margin: 10px 0 2px; min-height: 26px; }
+  .result.win { color: var(--win); }
+  .result.lose { color: var(--lose); }
+  .log { font-size: 12px; color: var(--muted); margin-top: 14px; min-height: 18px; word-break: break-all; }
+  a { color: var(--accent2); }
+  .hidden { display: none; }
+  .warn { background:#3a2410; border:1px solid #5a3a12; color:#ffce8a; font-size:12px; padding:10px 12px; border-radius:10px; margin-top:12px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>🪙 抛硬币 <span class="badge">Devnet</span></h1>
+    <div class="sub">连接 Phantom 钱包,押注 SOL，偶数为正面=赢(赔 2 倍)。仅用于演示。</div>
+
+    <button id="connectBtn" class="btn-primary">连接 Phantom 钱包</button>
+
+    <div id="app" class="hidden">
+      <div class="grid">
+        <div class="stat"><div class="k">你的地址</div><div class="v" id="addr">—</div></div>
+      </div>
+      <div class="grid">
+        <div class="stat"><div class="k">你的余额</div><div class="v" id="bal">—</div></div>
+        <div class="stat"><div class="k">金库余额</div><div class="v" id="vault">—</div></div>
+      </div>
+      <div class="grid">
+        <div class="stat"><div class="k">总局数</div><div class="v" id="rounds">0</div></div>
+        <div class="stat"><div class="k">胜场</div><div class="v" id="wins">0</div></div>
+      </div>
+
+      <label for="wager">押注金额 (SOL)</label>
+      <input id="wager" type="number" min="0.001" step="0.01" value="0.1" />
+
+      <div class="coin" id="coin">🪙</div>
+      <div class="result" id="result"></div>
+
+      <button id="flipBtn" class="btn-flip">抛硬币 🎲</button>
+      <div id="warn" class="warn hidden"></div>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+
+<script type="module">
+  import { Buffer } from 'https://esm.sh/buffer@6.0.3';
+  globalThis.Buffer = globalThis.Buffer || Buffer;
+  import {
+    Connection, PublicKey, Transaction, TransactionInstruction, SystemProgram
+  } from 'https://esm.sh/@solana/web3.js@1.95.3';
+
+  // ====== 配置(部署你自己的程序后,把 PROGRAM_ID 换成你的)======
+  const PROGRAM_ID = new PublicKey("FWwP3TsYbpgdZtAnqmM3kEjvUZU1RnXuD1RMjvmXt4qV");
+  const RPC = "https://api.devnet.solana.com";
+  const LAMPORTS = 1_000_000_000n;
+  // ============================================================
+
+  const connection = new Connection(RPC, "confirmed");
+  const programId = PROGRAM_ID;
+
+  // PDA(与 lib.rs 的 seeds 一致)
+  const [configPda]  = PublicKey.findProgramAddressSync([Buffer.from("config")], programId);
+  const [vaultPda]   = PublicKey.findProgramAddressSync([Buffer.from("vault")],  programId);
+  function playerStatePda(player) {
+    return PublicKey.findProgramAddressSync(
+      [Buffer.from("player"), player.toBytes()], programId
+    )[0];
+  }
+
+  // anchor 指令 discriminator = sha256("global:<name>")[..8]
+  async function discriminator(name) {
+    const pre = new TextEncoder().encode("global:" + name);
+    const h = new Uint8Array(await crypto.subtle.digest("SHA-256", pre));
+    return h.slice(0, 8);
+  }
+  function u64le(v) {
+    const a = new Uint8Array(8); let x = BigInt(v);
+    for (let i = 0; i < 8; i++) { a[i] = Number(x & 0xffn); x >>= 8n; }
+    return a;
+  }
+  function readU64le(buf, off) {
+    let x = 0n; for (let i = 7; i >= 0; i--) x = (x << 8n) | BigInt(buf[off + i]); return x;
+  }
+  const fmt = (lamports) => (Number(lamports) / 1e9).toFixed(4) + " SOL";
+  const short = (pk) => pk.toBase58().slice(0, 4) + "…" + pk.toBase58().slice(-4);
+
+  let provider = null;
+  let player = null;
+
+  const $ = (id) => document.getElementById(id);
+  const log = (m) => { $("log").innerHTML = m; };
+
+  function getProvider() {
+    const p = window.phantom?.solana ?? window.solana;
+    if (!p || !p.isPhantom) return null;
+    return p;
+  }
+
+  async function connect() {
+    provider = getProvider();
+    if (!provider) {
+      log('未检测到 Phantom。请先安装 <a href="https://phantom.app/" target="_blank">Phantom 钱包</a> 并刷新。');
+      return;
+    }
+    try {
+      const res = await provider.connect();
+      player = new PublicKey(res.publicKey.toString());
+      $("connectBtn").classList.add("hidden");
+      $("app").classList.remove("hidden");
+      $("addr").textContent = short(player);
+      await refresh();
+      log("已连接。提示:把 Phantom 网络切到 <b>Devnet</b>(设置→开发者模式)。");
+    } catch (e) {
+      log("连接被拒绝或失败:" + (e.message ?? e));
+    }
+  }
+
+  async function refresh() {
+    try {
+      const [bal, vbal, psInfo] = await Promise.all([
+        connection.getBalance(player),
+        connection.getBalance(vaultPda),
+        connection.getAccountInfo(playerStatePda(player)),
+      ]);
+      $("bal").textContent = fmt(bal);
+      $("vault").textContent = fmt(vbal);
+      if (psInfo && psInfo.data) {
+        const d = psInfo.data;            // 8 disc | player 32 | rounds 8 | wins 8 | last_wager 8 | last_won 1 | bump 1
+        $("rounds").textContent = readU64le(d, 40).toString();
+        $("wins").textContent   = readU64le(d, 48).toString();
+      } else {
+        $("rounds").textContent = "0"; $("wins").textContent = "0";
+      }
+    } catch (e) { /* 忽略读余额的瞬时错误 */ }
+  }
+
+  async function flip() {
+    if (!player) return;
+    const sol = parseFloat($("wager").value);
+    if (!(sol > 0)) { log("押注金额必须大于 0。"); return; }
+    const lamports = BigInt(Math.round(sol * Number(LAMPORTS)));
+
+    // 前置检查:金库要付得起 2 倍
+    const vbal = await connection.getBalance(vaultPda);
+    $("warn").classList.add("hidden");
+    if (BigInt(vbal) < lamports * 2n) {
+      $("warn").textContent = `金库余额 ${fmt(vbal)} 不足以赔付 2× 押注(需 ${fmt(lamports*2n)})。请减小押注,或让庄家给金库注资。`;
+      $("warn").classList.remove("hidden");
+      return;
+    }
+
+    $("flipBtn").disabled = true;
+    $("coin").classList.add("flipping");
+    $("result").textContent = ""; $("result").className = "result";
+    log("构造交易,等待 Phantom 签名…");
+
+    try {
+      const disc = await discriminator("play");
+      const data = Buffer.concat([Buffer.from(disc), Buffer.from(u64le(lamports))]);
+
+      const keys = [
+        { pubkey: player,                isSigner: true,  isWritable: true },
+        { pubkey: configPda,             isSigner: false, isWritable: true },
+        { pubkey: vaultPda,              isSigner: false, isWritable: true },
+        { pubkey: playerStatePda(player),isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      ];
+      const ix = new TransactionInstruction({ programId, keys, data });
+
+      const tx = new Transaction().add(ix);
+      tx.feePayer = player;
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+      tx.recentBlockhash = blockhash;
+
+      const { signature } = await provider.signAndSendTransaction(tx);
+      log("交易已发送,等待确认…");
+      await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
+
+      // 读结果:优先用 player_state.last_won;日志做兜底
+      let won = null;
+      const psInfo = await connection.getAccountInfo(playerStatePda(player));
+      if (psInfo?.data) won = psInfo.data[64] === 1;
+      if (won === null) {
+        const t = await connection.getTransaction(signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+        const line = (t?.meta?.logMessages ?? []).find((l) => l.includes("Flip result:"));
+        won = !!line && line.includes("WIN");
+      }
+
+      $("coin").classList.remove("flipping");
+      $("coin").textContent = won ? "😎" : "🙃";
+      $("result").textContent = won ? "WIN 🎉 正面!" : "LOSE 😞 反面";
+      $("result").className = "result " + (won ? "win" : "lose");
+      const url = `https://solscan.io/tx/${signature}?cluster=devnet`;
+      log(`完成 · <a href="${url}" target="_blank">在 Solscan 查看交易</a>`);
+      await refresh();
+    } catch (e) {
+      $("coin").classList.remove("flipping");
+      const msg = (e.message ?? String(e));
+      let hint = msg;
+      if (msg.includes("InsufficientVaultFunds")) hint = "金库余额不足以赔付 2 倍,押注太大了。";
+      else if (msg.includes("InsufficientPlayerFunds")) hint = "你的余额不够下这一注。";
+      else if (msg.includes("ZeroWager")) hint = "押注必须大于 0。";
+      else if (msg.toLowerCase().includes("user rejected")) hint = "你在 Phantom 里取消了签名。";
+      log("失败:" + hint);
+    } finally {
+      $("flipBtn").disabled = false;
+    }
+  }
+
+  $("connectBtn").addEventListener("click", connect);
+  $("flipBtn").addEventListener("click", flip);
+
+  // 若 Phantom 之前已授权,自动静默重连
+  (async () => {
+    const p = getProvider();
+    if (p) { try { await p.connect({ onlyIfTrusted: true }); connect(); } catch {} }
+  })();
+</script>
+</body>
+</html>
