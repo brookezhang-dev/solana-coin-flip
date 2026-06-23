@@ -1,106 +1,339 @@
-# Solana Coin Flip DApp (Anchor)
+# 🪙 Solana Coin Flip DApp
 
-把传统 EVM 抛硬币赌博合约的逻辑翻译到 Solana(SVM)账户模型:玩家用 SOL 下注,资金托管进程序拥有的 PDA 金库,链上结算输赢。
+基于 Anchor 0.31.1 的链上抛硬币游戏。玩家用 SOL 下注，资金托管进程序持有的 PDA 金库，链上伪随机结算输赢——赢得 2× 奖金，输则资金留在金库。
 
-## Program ID (Devnet)
+---
+
+## 在线体验
+
+**▶ [https://solana-coin-flip-ten.vercel.app/](https://solana-coin-flip-ten.vercel.app/)**
+
+连接 Phantom 钱包（切到 Devnet）+ 领测试币即可直接玩，无需安装任何开发工具。
+
+---
+
+## Program ID（Devnet）
 
 ```
-<部署后填入,运行 `solana address -k target/deploy/coin_flip-keypair.json` 或 `anchor keys list` 获取>
+FWwP3TsYbpgdZtAnqmM3kEjvUZU1RnXuD1RMjvmXt4qV
 ```
 
-## 本地运行客户端
+---
+
+## 项目结构
+
+```
+solana-coin-flip/
+├── programs/coin_flip/src/lib.rs   # 链上程序：initialize + play 两条指令
+├── tests/coin_flip.test.ts         # 9 个本地集成测试（Mocha + Chai）
+├── client/
+│   ├── init.ts                     # CLI：devnet 初始化金库（一次性）
+│   └── flip.ts                     # CLI：devnet 玩一局
+├── web/index.html                  # 浏览器前端（单文件，无构建）
+├── Anchor.toml                     # 工作区配置
+├── Cargo.toml                      # Rust workspace
+├── package.json                    # Node 脚本与依赖
+├── vercel.json                     # Vercel 静态托管配置
+└── DEPLOY.md                       # 完整部署手册
+```
+
+---
+
+## 使用方式
+
+### 方式一：网页版（无需开发环境）
+
+1. 安装 [Phantom 钱包](https://phantom.app/)浏览器插件
+2. 在 Phantom 设置中把网络切换到 **Devnet**
+3. 前往 [https://faucet.solana.com](https://faucet.solana.com) 领取 devnet 测试 SOL
+4. 打开 [https://solana-coin-flip-ten.vercel.app/](https://solana-coin-flip-ten.vercel.app/)，点击「连接 Phantom 钱包」
+5. 输入押注金额 → 点击「抛硬币」→ 在 Phantom 中签名
+
+---
+
+### 方式二：命令行客户端（devnet）
+
+> 前提：已完成下方「环境安装」和「部署」步骤，或使用已部署的 Program ID。
 
 ```bash
-# 1. 安装依赖
+# 安装依赖
 yarn install
 
-# 2. 编译并部署到 devnet(详见下方"部署步骤")
-anchor build
+# 初始化金库（仅需一次，给庄家本金注资 2 SOL）
+yarn init:vault 2
+
+# 玩一局，押注 0.1 SOL
+yarn flip 0.1
+```
+
+**`yarn flip` 输出示例：**
+
+```
+Player:          <你的地址>
+Balance before:  4.8800 SOL
+Wager:           0.1 SOL
+Tx:              https://solscan.io/tx/<HASH>?cluster=devnet
+-----------------------------------------
+Result:          WIN 🎉 (Heads)
+Rounds / Wins:   3 / 2
+Balance after:   4.9700 SOL
+```
+
+**环境变量（可选）：**
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `RPC_URL` | `https://api.devnet.solana.com` | 自定义 RPC 节点 |
+| `KEYPAIR` | `~/.config/solana/id.json` | 指定钱包密钥对路径 |
+
+```bash
+# 示例：使用自定义 RPC 和密钥
+RPC_URL=https://your-rpc.com KEYPAIR=~/my-wallet.json yarn flip 0.5
+```
+
+---
+
+### 方式三：本地测试
+
+```bash
+# 一条命令完成：编译 → 启动本地验证节点 → 部署 → 跑 9 个测试 → 停止节点
+anchor test
+```
+
+**预期输出：**
+
+```
+coin_flip
+  ✔ initializes and funds the vault (Happy Path: setup)
+  ✔ plays a round and updates player state (Happy Path: bet -> settle)
+  ✔ rejects a zero wager (Edge Case: bet 0)
+  ✔ rejects a wager the vault cannot cover (Edge Case: bet too big)
+  ✔ rejects a bet when the player has insufficient funds (Edge Case: player broke)
+  ✔ increments config.total_rounds after each play (State: global counter)
+  ✔ adjusts vault balance correctly based on outcome (State: vault economics)
+  ✔ increments wins only when player wins (State: playerState.wins)
+  ✔ rejects re-initialization of an existing config (Edge Case: double init)
+
+9 passing (3s)
+```
+
+已有构建产物时可跳过编译：
+
+```bash
+anchor test --skip-build
+```
+
+---
+
+## 从零部署（部署你自己的实例）
+
+> 完整步骤见 [DEPLOY.md](./DEPLOY.md)，以下为速查版。
+
+### Step 0：安装环境
+
+```bash
+# 一条命令装齐 Rust + Solana CLI + Anchor
+curl --proto '=https' --tlsv1.2 -sSfL https://solana-install.solana.workers.dev | bash
+
+# 重开终端后，锁定 Anchor 版本
+avm install 0.31.1 && avm use 0.31.1
+
+# 验证
+anchor --version   # anchor-cli 0.31.1
+solana --version   # solana-cli 4.0.3
+node --version     # v18+
+```
+
+### Step 1：钱包与测试币
+
+```bash
+solana-keygen new                  # 生成 ~/.config/solana/id.json
+solana config set --url devnet
+solana airdrop 2 && solana airdrop 2 && solana airdrop 2
+solana balance                     # 确认 >= 5 SOL
+```
+
+> 限流时改用网页水龙头：[https://faucet.solana.com](https://faucet.solana.com)
+
+### Step 2：安装依赖
+
+```bash
+yarn install
+```
+
+### Step 3：同步 Program ID
+
+```bash
+# 生成本机专属密钥对，并自动同步 lib.rs / Anchor.toml 中的 Program ID
+anchor keys sync
+```
+
+### Step 4：本地编译与测试
+
+```bash
+anchor build   # 编译 Rust 程序，生成 target/idl/ 和 target/types/
+anchor test    # 全流程测试（9 个用例全绿则通过）
+```
+
+### Step 5：部署到 Devnet
+
+```bash
 anchor deploy --provider.cluster devnet
-
-# 3. 初始化(只需一次):给金库注入庄家本金
-#    可在 tests 里完成,或单独写一个 init 脚本。
-
-# 4. 玩一局,押注 0.1 SOL
-RPC_URL=https://api.devnet.solana.com ts-node client/flip.ts 0.1
 ```
 
-## 资金流向图
+> 输出 `Program Id: <你的ID>` 表示成功。余额不足时回 Step 1 多领币。
 
-```
-                      下注 wager (CPI: 玩家签名)
-   玩家钱包  ───────────────────────────────────►  Vault PDA (seeds=["vault"])
-      ▲                                                    │
-      │            赢: 付 2 × wager                         │
-      │     (CPI: 程序用 vault seeds 签名 invoke_signed)     │
-      └────────────────────────────────────────────────────┘
-                      输: 资金留在 Vault(归庄家)
+### Step 6：初始化金库（仅需一次）
+
+```bash
+yarn init:vault 2   # 给 Vault PDA 注入 2 SOL 庄家本金
 ```
 
-- 输:玩家 → 金库 1×,金库净 +1×。
-- 赢:玩家 → 金库 1×,金库 → 玩家 2×,金库净 −1×。
-- 所以需要 `initialize` 预先给金库注入本金,否则第一次赢无法支付。
+> 幂等操作：重复执行会检测到已初始化并跳过，不会重复扣款。
 
-## PDA 策略(为什么用 PDA 而不是普通 Keypair)
+### Step 7：玩一局，拿 Tx Hash
 
-- **Config PDA** `seeds = ["config"]`:全局唯一,任何人都能用相同种子推导出地址,不需要保存私钥。
-- **Vault PDA** `seeds = ["vault"]`:持有所有托管资金。**关键**:PDA 没有私钥,只有派生它的程序能用 `seeds + bump` 通过 `invoke_signed` 代表它签名转出资金。如果用普通 Keypair 当金库,私钥一旦泄露资金就被盗;PDA 把"谁能动钱"约束死在程序逻辑里。
-- **PlayerState PDA** `seeds = ["player", player_pubkey]`:每个玩家一个,种子里带玩家公钥,天然隔离,且 `init_if_needed` 不会被他人重复初始化(payer 与种子都绑定玩家本人)。
+```bash
+yarn flip 0.1
+```
 
-## 安全模型
+输出里的 `solscan.io/tx/...?cluster=devnet` 链接即为可验证的交易记录。
 
-- **谁付租金(rent)**:`initialize` 里 Config 账户由 authority 付租金;`play` 里 PlayerState 账户由玩家本人付租金(`payer = player`)。Vault 是纯 SOL 账户,靠庄家本金保持租金豁免余额。
-- **防止未授权提款**:转出金库的唯一路径是 `play` 指令里 `won == true` 的分支,且由 Vault PDA 的 `seeds` 签名。外部账户拿不到 PDA 私钥(根本不存在),无法绕过程序直接动金库。`play` 要求 `player` 是 `Signer`,确保操作者是玩家本人。
+---
+
+## 资金流向
+
+```
+                    下注 wager（CPI：玩家签名）
+  玩家钱包  ──────────────────────────────────►  Vault PDA (seeds=["vault"])
+     ▲                                                   │
+     │           赢：付 2 × wager                         │
+     │    （CPI：程序用 vault seeds 签名 invoke_signed）    │
+     └───────────────────────────────────────────────────┘
+                    输：资金留在 Vault（归庄家）
+```
+
+| 结果 | 玩家净变化 | Vault 净变化 |
+|------|-----------|-------------|
+| 输   | −wager    | +wager      |
+| 赢   | +wager    | −wager      |
+
+---
+
+## 架构设计
+
+### PDA 设计
+
+| PDA | Seeds | 用途 |
+|-----|-------|------|
+| Config | `["config"]` | 全局配置：authority、total_rounds、bump |
+| Vault | `["vault"]` | 纯 SOL 账户，托管所有押注与本金 |
+| PlayerState | `["player", player_pubkey]` | 每玩家独立状态：rounds、wins、last_won、last_wager |
+
+PDA 没有私钥，转出资金唯一路径是程序内 `invoke_signed`，外部无法绕过程序直接动金库。
+
+### 安全模型
+
+- **PlayerState 租金**：由玩家自己支付（`payer = player`），`init_if_needed` 防止他人替代初始化。
+- **Vault 转出**：只有 `play` 指令中 `won == true` 分支可触发，且 `player` 必须是 `Signer`。
+- **数学溢出**：根 `Cargo.toml` 启用 `overflow-checks = true`，链上算术溢出直接 panic，不会静默截断。
+- **重复初始化**：`initialize` 使用 Anchor `init` 约束，账户已存在时自动拒绝。
+
+### 账户约束一览
+
+```rust
+// Initialize
+config:  init, payer = authority, seeds = [b"config"], bump
+vault:   mut,  seeds = [b"vault"],  bump（SystemAccount，不存数据）
+
+// Play
+config:       mut, seeds = [b"config"], bump = config.bump
+vault:        mut, seeds = [b"vault"],  bump = config.vault_bump
+player_state: init_if_needed, payer = player, seeds = [b"player", player.key()]
+```
+
+---
+
+## 技术说明
+
+### 随机数
+
+当前使用 `Clock(unix_timestamp + slot)` + 玩家公钥 + 局数做哈希取奇偶，**属于伪随机，可被出块者预测**，仅用于教学演示。生产环境应接入 [Switchboard VRF](https://switchboard.xyz/) 或其他可验证随机方案。
+
+```rust
+let mut buf = Vec::with_capacity(56);
+buf.extend_from_slice(&clock.unix_timestamp.to_le_bytes());
+buf.extend_from_slice(&clock.slot.to_le_bytes());
+buf.extend_from_slice(player_key.as_ref());
+buf.extend_from_slice(&rounds.to_le_bytes());
+let won = hash(&buf).to_bytes()[0] % 2 == 0;  // 偶数 = 正面 = 赢
+```
+
+### Compute Unit 消耗
+
+`play` 指令包含：1 次 SHA-256、1–2 次 System Program CPI 转账、首次玩时的 `init_if_needed` 建账户。
+
+实测约 **15,000–35,000 CU**，远低于 Solana 单指令 200,000 CU 上限。
+
+```bash
+# 查看具体消耗
+anchor test 2>&1 | grep "compute units"
+
+# 或通过交易签名查询
+solana confirm -v <TxHash> --url devnet
+```
+
+### 成本对比：Solana vs Ethereum
+
+> 参考价格：SOL ≈ $72.81，ETH ≈ $1,576.93，ETH gas ≈ 0.196 gwei
+
+| 链 | 单次 flip 费用 | 约合 USD |
+|----|---------------|----------|
+| Solana | 0.000005 SOL（1 签名） | ~$0.0004 |
+| Ethereum（0.196 gwei） | ~0.0000157 ETH | ~$0.025 |
+| Ethereum（拥堵 10 gwei） | ~0.0008 ETH | ~$1.26 |
+
+即使以太坊 gas 极低，Solana 单次成本仍便宜约 **60 倍**；拥堵时差距可达 **3000 倍以上**。
+
+> 首次玩另有一次性 PlayerState 租金约 0.0011 SOL，关闭账户时可取回，不计入每局成本。
+
+---
 
 ## EVM vs SVM 对比
 
 | 维度 | Solidity (EVM) | Anchor (SVM) |
 |------|----------------|--------------|
-| 收款 | `payable` 函数,`msg.value` 自动到合约余额 | 没有 payable;需显式 CPI 调用 System Program 的 `transfer` 把 SOL 转入 PDA |
-| 状态存储 | 合约内 `mapping`/`storage` 与代码同体 | 代码(Program)与状态(Account)分离,状态存在独立账户里,需预分配空间并付租金 |
-| 资金托管权限 | 合约地址即权限,`address(this).transfer` | 金库是 PDA,转出需用 `seeds + bump` 做 `invoke_signed` 签名 |
-| 随机数 | 同样无安全原生随机(常用 Chainlink VRF) | 同样无;demo 用 Clock/slot 哈希,生产用 Switchboard VRF |
-| 账户传递 | 调用时无需声明用到哪些存储 | 必须在指令里显式列出所有读写账户(账户模型) |
+| 收款 | `payable` 函数，`msg.value` 自动到合约余额 | 无 payable；需显式 CPI 调用 System Program `transfer` |
+| 状态存储 | 合约内 `mapping/storage`，与代码同体 | 代码（Program）与状态（Account）分离，状态存独立账户，需预分配空间并付租金 |
+| 资金托管 | 合约地址即权限，`address(this).transfer` | 金库是 PDA，转出需 `seeds + bump` 做 `invoke_signed` |
+| 随机数 | 无原生安全随机（常用 Chainlink VRF） | 同上；demo 用 Clock 哈希，生产用 Switchboard VRF |
+| 账户声明 | 调用时无需声明读写哪些存储 | 必须在指令里显式列出所有读写账户 |
 
-## 随机数说明
+---
 
-本 demo 用 `Clock(unix_timestamp + slot)` + 玩家公钥 + 局数 做哈希取奇偶,**属于伪随机,可被出块者预测**,仅用于教学。生产环境应接入 Switchboard VRF 或 Solana 的可验证随机方案。
+## 常见问题
 
-## 性能:`play` 指令的 Compute Unit 消耗
+**Q: 网页打开后「未检测到 Phantom」**  
+A: 安装 [Phantom](https://phantom.app/) 浏览器插件后刷新页面。
 
-Solana 用 Compute Unit(CU)衡量计算量,单条指令默认上限 200,000 CU。`play` 做的事:1 次 sha256 伪随机、1~2 次 System Program CPI 转账、首次玩时 `init_if_needed` 创建 PlayerState 账户、若干状态写入。实测量级约 **15,000–35,000 CU**(首次玩含建账户偏高,之后偏低),远低于 200k 上限。
+**Q: 一下注就报 `InsufficientVaultFunds`**  
+A: 金库余额不足以赔付 2× 押注。管理员需运行 `yarn init:vault 2` 补充本金，或减小押注金额。
 
-如何拿到你本机的精确值(三选一):
+**Q: `anchor test` 卡在启动验证节点**  
+A: 端口被占。运行 `pkill -f solana-test-validator` 后重试。
 
-```bash
-# 1) anchor test / 部署日志里找这一行:
-#    Program <ID> consumed 28543 of 200000 compute units
-anchor test 2>&1 | grep "compute units"
+**Q: `anchor deploy` 报 `Insufficient funds`**  
+A: 部署需要 2–4 SOL 作为程序账户租金。运行 `solana airdrop 2` 多次补充余额。
 
-# 2) 用交易签名查(devnet):
-solana confirm -v <你的TxHash> --url devnet   # 输出含 "Consumed N compute units"
+**Q: `anchor keys sync` 显示 ID 不一致**  
+A: 正常现象，该命令会自动将 `lib.rs` 和 `Anchor.toml` 中的 Program ID 更新为本机密钥对对应的地址。
 
-# 3) Solscan 打开该交易 -> "Compute Units Consumed" 字段
-```
+---
 
-> 把实测数字填到这里替换上面的估计值,答辩更有说服力。
+## 安全警告
 
-## 成本对比:Solana vs Ethereum 一次 flip
+本项目仅用于教学演示，存在以下已知限制：
 
-> 价格随行情波动,以下为参考时点:SOL ≈ \$72.81、ETH ≈ \$1,576.93、ETH gas ≈ 0.196 gwei。
-
-**Solana**:交易费 = 每个签名 5,000 lamports,本交易 1 个签名 = `0.000005 SOL` ≈ **\$0.00036**(不到万分之四美元)。首次玩另有一次性 PlayerState 租金约 0.0011 SOL,可在关闭账户时取回,不算每局成本。
-
-**Ethereum**:一次同类合约调用(含状态写入 + 1~2 次转账)约 80,000 gas(估算)。
-- 当前低 gas(0.196 gwei):`80,000 × 0.196 gwei = 0.0000157 ETH` ≈ **\$0.025**
-- 拥堵时(假设 10 gwei):`80,000 × 10 gwei = 0.0008 ETH` ≈ **\$1.26**
-
-| 链 | 单次 flip 费用 | 约合 USD |
-|----|----------------|----------|
-| Solana | 0.000005 SOL | ~\$0.0004 |
-| Ethereum(0.196 gwei) | 0.0000157 ETH | ~\$0.025 |
-| Ethereum(拥堵 10 gwei) | 0.0008 ETH | ~\$1.26 |
-
-结论:即使在以太坊 gas 极低的时点,Solana 单次成本仍便宜约 **60 倍**;网络拥堵时差距可达 **3000 倍以上**。Solana 费用与计算量(CU)挂钩且固定签名费,对高频小额交互(如游戏)成本优势显著。
-
-> 注:80,000 gas 与拥堵 gas 价均为说明性假设,实际取决于合约实现与当时网络;Solana 5,000 lamports/签名为协议固定基础费(不含可选优先费)。
+- 随机数可被出块者预测，**不适合 mainnet 真实资金场景**
+- 无管理员提款指令（Vault 资金只能通过 play 流出）
+- 无限注上限（仅受 Vault 余额约束）
