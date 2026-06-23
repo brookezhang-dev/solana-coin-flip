@@ -123,6 +123,186 @@ coin_flip
 anchor test --skip-build
 ```
 
+### 测试用例详情
+
+测试文件：`tests/coin_flip.test.ts`  
+框架：Mocha + Chai，通过 `AnchorProvider.env()` 连接 localnet，真实调用链上程序。  
+所有用例**按顺序共享链上状态**，不可打乱执行顺序。
+
+---
+
+#### TC-01 · Happy Path：初始化并注资金库
+
+```
+initializes and funds the vault (Happy Path: setup)
+```
+
+| 项 | 值 |
+|----|----|
+| 调用指令 | `initialize(bankroll = 2 SOL)` |
+| 账户 | authority · Config PDA · Vault PDA · SystemProgram |
+
+**断言：**
+- `getBalance(vaultPda) >= 2 × LAMPORTS_PER_SOL` — 金库余额达标
+- `config.authority == authority.publicKey` — 管理员地址正确写入
+
+---
+
+#### TC-02 · Happy Path：正常下注并结算
+
+```
+plays a round and updates player state (Happy Path: bet -> settle)
+```
+
+| 项 | 值 |
+|----|----|
+| 调用指令 | `play(wager = 0.1 SOL)` |
+| 账户 | player · Config PDA · Vault PDA · PlayerState PDA · SystemProgram |
+
+**断言：**
+- `playerState.rounds == 1` — 局数正确递增
+- `playerState.lastWager == 0.1 × LAMPORTS_PER_SOL` — 押注额正确记录
+- `playerState.lastWon`（打印赢/输，不断言——结果由伪随机决定）
+
+---
+
+#### TC-03 · Edge Case：拒绝零押注
+
+```
+rejects a zero wager (Edge Case: bet 0)
+```
+
+| 项 | 值 |
+|----|----|
+| 调用指令 | `play(wager = 0)` |
+| 期望行为 | 交易失败，抛出程序错误 |
+
+**断言：**
+- 错误信息包含 `ZeroWager`（对应 `lib.rs` 的 `require!(wager > 0, FlipError::ZeroWager)`）
+
+---
+
+#### TC-04 · Edge Case：拒绝金库无力赔付的超大押注
+
+```
+rejects a wager the vault cannot cover (Edge Case: bet too big)
+```
+
+| 项 | 值 |
+|----|----|
+| 调用指令 | `play(wager = 100 SOL)` |
+| 触发条件 | `2 × wager (200 SOL) > vaultBalance (≈2 SOL)` |
+| 期望行为 | 交易失败，抛出程序错误 |
+
+**断言：**
+- 错误信息包含 `InsufficientVaultFunds`（程序在结算前检查金库是否能赔付 2×）
+
+---
+
+#### TC-05 · Edge Case：拒绝玩家余额不足的下注
+
+```
+rejects a bet when the player has insufficient funds (Edge Case: player broke)
+```
+
+| 项 | 值 |
+|----|----|
+| 玩家 | 新生成 Keypair，airdrop **0.05 SOL** |
+| 调用指令 | `play(wager = 0.5 SOL)` |
+| 触发条件 | `playerBalance (≈0.05 SOL) < wager (0.5 SOL)` |
+| 期望行为 | 交易失败，抛出程序错误 |
+
+**断言：**
+- 错误信息包含 `InsufficientPlayerFunds`
+
+> 此用例使用独立 Keypair（`.signers([poorPlayer])`），不影响主账户状态。
+
+---
+
+#### TC-06 · State：全局轮数计数器正确递增
+
+```
+increments config.total_rounds after each play (State: global counter)
+```
+
+| 项 | 值 |
+|----|----|
+| 调用指令 | `play(wager = 0.01 SOL)` |
+| 读取时机 | 指令调用前后各 fetch 一次 Config 账户 |
+
+**断言：**
+- `configAfter.totalRounds == configBefore.totalRounds + 1`（无论输赢，每局必须 +1）
+
+---
+
+#### TC-07 · State：金库余额随结果精确变化
+
+```
+adjusts vault balance correctly based on outcome (State: vault economics)
+```
+
+| 项 | 值 |
+|----|----|
+| 调用指令 | `play(wager = 0.01 SOL)` |
+| 读取时机 | 调用前后各 `getBalance(vaultPda)` |
+
+**断言（分支）：**
+
+| 结果 | 断言 | 说明 |
+|------|------|------|
+| 玩家赢 | `vaultAfter == vaultBefore − wager` | 收入 wager，赔出 2×wager，净 −wager |
+| 玩家输 | `vaultAfter == vaultBefore + wager` | 收入 wager 并保留，净 +wager |
+
+---
+
+#### TC-08 · State：胜场计数器仅在赢时递增
+
+```
+increments wins only when player wins (State: playerState.wins)
+```
+
+| 项 | 值 |
+|----|----|
+| 调用指令 | `play(wager = 0.01 SOL)` |
+| 读取时机 | 调用前后各 fetch 一次 PlayerState 账户 |
+
+**断言：**
+- `psAfter.rounds == psBefore.rounds + 1`（无论输赢，局数必须 +1）
+- 赢：`psAfter.wins == psBefore.wins + 1`
+- 输：`psAfter.wins == psBefore.wins`（不变）
+
+---
+
+#### TC-09 · Edge Case：拒绝重复初始化
+
+```
+rejects re-initialization of an existing config (Edge Case: double init)
+```
+
+| 项 | 值 |
+|----|----|
+| 调用指令 | `initialize(bankroll = 1 SOL)`（Config 账户已存在） |
+| 期望行为 | 交易失败 |
+
+**断言：**
+- 抛出任意错误（Anchor 的 `init` 约束会检查账户是否已存在，已存在则直接拒绝，无需程序自定义错误码）
+
+---
+
+#### 测试覆盖矩阵
+
+| 测试编号 | 类型 | 指令 | 覆盖点 |
+|---------|------|------|--------|
+| TC-01 | Happy Path | `initialize` | 账户创建、余额注入、authority 写入 |
+| TC-02 | Happy Path | `play` | 下注流转、PlayerState 初始化与更新 |
+| TC-03 | Edge Case | `play` | `ZeroWager` 错误码 |
+| TC-04 | Edge Case | `play` | `InsufficientVaultFunds` 错误码 |
+| TC-05 | Edge Case | `play` | `InsufficientPlayerFunds` 错误码 |
+| TC-06 | State | `play` | `config.totalRounds` 全局计数 |
+| TC-07 | State | `play` | Vault lamports 经济模型（赢减输增） |
+| TC-08 | State | `play` | `playerState.wins` 仅胜时递增 |
+| TC-09 | Edge Case | `initialize` | 重复初始化防护（Anchor `init` 约束） |
+
 ---
 
 ## 从零部署（部署你自己的实例）

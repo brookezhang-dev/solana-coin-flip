@@ -29,6 +29,7 @@ describe("coin_flip", () => {
   );
 
   it("initializes and funds the vault (Happy Path: setup)", async () => {
+    // 初始化金库、下注流转、PlayerState 初始化与更新
     const bankroll = new BN(2 * LAMPORTS_PER_SOL);
 
     await program.methods
@@ -49,6 +50,7 @@ describe("coin_flip", () => {
   });
 
   it("plays a round and updates player state (Happy Path: bet -> settle)", async () => {
+    // 下注、更新 PlayerState
     const wager = new BN(0.1 * LAMPORTS_PER_SOL);
 
     await program.methods
@@ -69,6 +71,7 @@ describe("coin_flip", () => {
   });
 
   it("rejects a zero wager (Edge Case: bet 0)", async () => {
+    // 下注 0 应触发 ZeroWager 错误
     try {
       await program.methods
         .play(new BN(0))
