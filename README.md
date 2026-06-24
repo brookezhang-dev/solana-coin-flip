@@ -25,7 +25,7 @@ FWwP3TsYbpgdZtAnqmM3kEjvUZU1RnXuD1RMjvmXt4qV
 ```
 solana-coin-flip/
 ├── programs/coin_flip/src/lib.rs   # 链上程序：initialize + play 两条指令
-├── tests/coin_flip.test.ts         # 9 个本地集成测试（Mocha + Chai）
+├── tests/coin_flip.test.ts         # 11 个本地集成测试（Mocha + Chai）
 ├── client/
 │   ├── init.ts                     # CLI：devnet 初始化金库（一次性）
 │   └── flip.ts                     # CLI：devnet 玩一局
@@ -96,7 +96,7 @@ RPC_URL=https://your-rpc.com KEYPAIR=~/my-wallet.json yarn flip 0.5
 ### 方式三：本地测试
 
 ```bash
-# 一条命令完成：编译 → 启动本地验证节点 → 部署 → 跑 9 个测试 → 停止节点
+# 一条命令完成：编译 → 启动本地验证节点 → 部署 → 跑 11 个测试 → 停止节点
 anchor test
 ```
 
@@ -104,18 +104,22 @@ anchor test
 
 ```
 coin_flip
-  ✔ initializes and funds the vault (Happy Path: setup)
-  ✔ plays a round and updates player state (Happy Path: bet -> settle)
-  ✔ rejects a zero wager (Edge Case: bet 0)
-  ✔ rejects a wager the vault cannot cover (Edge Case: bet too big)
-  ✔ rejects a bet when the player has insufficient funds (Edge Case: player broke)
-  ✔ increments config.total_rounds after each play (State: global counter)
-  ✔ adjusts vault balance correctly based on outcome (State: vault economics)
-  ✔ increments wins only when player wins (State: playerState.wins)
-  ✔ rejects re-initialization of an existing config (Edge Case: double init)
+  ✔ TC-01 initializes and funds the vault (Happy Path: setup)
+  ✔ TC-02 plays a round, updates state, asserts payout math + logs CU
+  ✔ TC-03 rejects a zero wager (Edge Case: bet 0)
+  ✔ TC-04 rejects a wager the vault cannot cover (Edge Case: bet too big)
+  ✔ TC-05 rejects a bet when player has insufficient funds (Edge Case: player broke)
+  ✔ TC-06 increments config.total_rounds after each play (State: global counter)
+  ✔ TC-07 vault economics hold across many rounds (State + payout coverage)
+  ✔ TC-08 increments wins only when player wins (State: playerState.wins)
+  ✔ TC-09 rejects re-initialization of an existing config (Edge Case: double init)
+  ✔ TC-10 lets the authority withdraw from the vault (#3 happy path)
+  ✔ TC-11 blocks a non-authority from withdrawing (#3 access control)
 
-9 passing (3s)
+11 passing
 ```
+
+> 输出里每个 play 用例会打印一行 `[CU] ...: NNNNN compute units`,即该笔 `play` 的实测 Compute Unit 消耗(交付物要求的 CU 记录)。
 
 已有构建产物时可跳过编译：
 
@@ -127,7 +131,7 @@ anchor test --skip-build
 
 测试文件：`tests/coin_flip.test.ts`  
 框架：Mocha + Chai，通过 `AnchorProvider.env()` 连接 localnet，真实调用链上程序。  
-所有用例**按顺序共享链上状态**，不可打乱执行顺序。
+每个 `play` 用例使用**独立新建并出资的玩家**(`freshPlayer()` airdrop),互不依赖、可独立运行(修复了早期"顺序共享状态"的耦合)。Config/Vault 为全局单例,由 TC-01 初始化一次。
 
 ---
 
@@ -301,7 +305,11 @@ rejects re-initialization of an existing config (Edge Case: double init)
 | TC-06 | State | `play` | `config.totalRounds` 全局计数 |
 | TC-07 | State | `play` | Vault lamports 经济模型（赢减输增） |
 | TC-08 | State | `play` | `playerState.wins` 仅胜时递增 |
-| TC-09 | Edge Case | `initialize` | 重复初始化防护（Anchor `init` 约束） |
+| TC-09 | Edge Case | `initialize` | 重复初始化防护（断言 "already in use"） |
+| TC-10 | Access | `withdraw` | 庄家提款成功,金库按额减少 |
+| TC-11 | Access | `withdraw` | 非 authority 提款被拒（`Unauthorized`） |
+
+> #6/#9 增强:TC-07 连玩多局,赢/输两条赔付分支大概率都被执行,且每局用金库余额变动做确定性断言;每个 play 用例打印实测 CU。随机数无法 mock,要 100% 强制覆盖赢的分支需把随机改成可注入(见「随机数」#1)。
 
 ---
 
@@ -352,7 +360,7 @@ anchor keys sync
 
 ```bash
 anchor build   # 编译 Rust 程序，生成 target/idl/ 和 target/types/
-anchor test    # 全流程测试（9 个用例全绿则通过）
+anchor test    # 全流程测试（11 个用例全绿则通过）
 ```
 
 ### Step 5：部署到 Devnet
@@ -415,9 +423,14 @@ PDA 没有私钥，转出资金唯一路径是程序内 `invoke_signed`，外部
 ### 安全模型
 
 - **PlayerState 租金**：由玩家自己支付（`payer = player`），`init_if_needed` 防止他人替代初始化。
-- **Vault 转出**：只有 `play` 指令中 `won == true` 分支可触发，且 `player` 必须是 `Signer`。
-- **数学溢出**：根 `Cargo.toml` 启用 `overflow-checks = true`，链上算术溢出直接 panic，不会静默截断。
-- **重复初始化**：`initialize` 使用 Anchor `init` 约束，账户已存在时自动拒绝。
+- **Vault 转出**：`play` 中 `won == true` 分支与 `withdraw` 指令可触发，均由 Vault PDA 用 `seeds + bump` 经 `invoke_signed` 签名；外部无私钥,无法绕过程序动金库。
+- **金库租金 floor（#2）**：`play` 的赔付与 `withdraw` 都校验"操作后金库余额仍 ≥ 租金豁免下限"（`Rent::minimum_balance(0)`），避免把金库打到豁免线以下,或打到 0 被系统销毁。
+- **资金效率（#5）**：`play` 的金库校验为 `余额 ≥ wager + rent_min`（而非保守的 `2×wager`）。因为托管会先给金库 +1×wager,赢时净支出仅 1×wager,所以 1× + 租金即足够。
+- **庄家提款（#3）**：`withdraw(amount)` 仅 `config.authority` 可调（`has_one = authority @ Unauthorized`），用于回收本金/取利润;同样受租金 floor 约束。
+- **玩家余额检查（#4）**：`play` 里 `player.lamports() >= wager` 仅为 UX 友好提示;真正的兜底是 System Program CPI 转账在余额不足时自行失败回滚(该检查未计租金/手续费,非 load-bearing)。
+- **数学溢出**：根 `Cargo.toml` 启用 `overflow-checks = true`，并用 `checked_mul/checked_add`，链上算术溢出直接 panic，不会静默截断。
+- **重复初始化**：`initialize` 使用 Anchor `init` 约束，账户已存在时自动拒绝（System Program 报 "already in use"）。
+- **随机数(已知局限)**：见下方「随机数」——伪随机可预测,且 same-tx 结算可被原子 free-roll,仅用于教学。
 
 ### 账户约束一览
 
@@ -430,6 +443,11 @@ vault:   mut,  seeds = [b"vault"],  bump（SystemAccount，不存数据）
 config:       mut, seeds = [b"config"], bump = config.bump
 vault:        mut, seeds = [b"vault"],  bump = config.vault_bump
 player_state: init_if_needed, payer = player, seeds = [b"player", player.key()]
+
+// Withdraw（庄家提款）
+authority:    mut, Signer
+config:       seeds = [b"config"], bump = config.bump, has_one = authority @ Unauthorized
+vault:        mut, seeds = [b"vault"],  bump = config.vault_bump
 ```
 
 ---
@@ -448,6 +466,25 @@ buf.extend_from_slice(player_key.as_ref());
 buf.extend_from_slice(&rounds.to_le_bytes());
 let won = hash(&buf).to_bytes()[0] % 2 == 0;  // 偶数 = 正面 = 赢
 ```
+
+#### 更深一层的问题:同一笔交易内"出随机 + 结算"为什么根本不安全(原子 free-roll)
+
+本 demo 把随机生成和资金结算放在**同一条 `play` 指令、同一笔交易**里。这带来一个比"随机数可预测"更根本的漏洞——**即使随机数完美无法预测,玩家依然能做到必不输**:
+
+Solana 一笔交易里的多条指令**顺序执行、整体原子提交**,且前一条指令对账户的写入,后一条指令立即可读。攻击者用自己的程序写一条 `assert_win`(读 `player_state.last_won`,为 `false` 就 `panic`),然后打包成一笔交易 `[play(wager), assert_win]`:
+
+- **输**:`assert_win` 中止 → **整笔回滚,连 `play` 里"玩家→金库"的托管转账一起撤销** → 玩家钱没少,等于没下注。
+- **赢**:两条指令都成功 → 玩家拿走 `2 × wager`。
+
+结果:庄家只会"落账"玩家赢的局,必亏。**注意这跟能否预测随机数无关,纯粹是原子可组合性(atomic composability)**——这是 Solana 链上赌博的经典漏洞。
+
+**为什么本项目保留它**:挑战的验收标准对随机数只要求"**承认这是演示用的伪随机(acknowledge pseudo-randomness for demo)**",并不要求实现生产级安全随机。本 demo 仅用于 devnet 教学,不涉及真实资金,因此保留该结构、在此明确说明,而非引入额外复杂度。
+
+**生产级正解(二选一)**:
+1. **commit–reveal**:第一笔交易只下注、锁定资金、记录承诺;**在之后的区块**用玩家当时无法知道/无法操纵的未来值(如未来 slot hash)在第二条指令里结算。下注与结算跨交易,原子回滚便失效。
+2. **VRF(如 [Switchboard](https://switchboard.xyz/))**:请求可验证随机数,在回调指令里结算。
+
+> 一句话:`same-tx randomness + settlement` 永远不安全,安全的前提是"下注"和"结算"必须分处不同交易/区块。
 
 ### Compute Unit 消耗
 
